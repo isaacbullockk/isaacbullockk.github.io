@@ -24,7 +24,9 @@ export const CATEGORY_LABELS: Record<LineCategory, string> = {
 /** Short mono chip label for each chat context (library.md §3 card top row). */
 export const CONTEXT_CHIP_LABELS: Record<ChatContext, string> = {
   tinder: 'TINDER',
+  bumble: 'BUMBLE',
   hinge: 'HINGE',
+  texting: 'TEXT',
   imessage: 'TEXT',
   instagram: 'IG',
   other: 'ANY',
@@ -34,8 +36,8 @@ export const CONTEXT_CHIP_LABELS: Record<ChatContext, string> = {
 export type ContextGroup = 'apps' | 'texting' | 'instagram';
 
 export const CONTEXT_GROUPS: Record<ContextGroup, { label: string; contexts: ChatContext[] }> = {
-  apps: { label: 'APPS', contexts: ['tinder', 'hinge'] },
-  texting: { label: 'TEXTING', contexts: ['imessage'] },
+  apps: { label: 'APPS', contexts: ['tinder', 'bumble', 'hinge'] },
+  texting: { label: 'TEXTING', contexts: ['texting', 'imessage'] },
   instagram: { label: 'INSTAGRAM', contexts: ['instagram'] },
 };
 
