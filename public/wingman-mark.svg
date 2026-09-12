@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <!-- Minimal quill pen nib drawn as a single elegant stroke forming a subtle "W" -->
+  <path
+    d="M10 14 C 14 26, 18 38, 22 48 C 24 52, 26 52, 28 47 C 29.5 43, 30.8 38.5, 32 34 C 33.2 38.5, 34.5 43, 36 47 C 38 52, 40 52, 42 48 C 46 38, 50 26, 54 14"
+    stroke="#D08C46"
+    stroke-width="1.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    fill="none"
+  />
+  <!-- nib slit -->
+  <path
+    d="M32 34 L 32 22"
+    stroke="#D08C46"
+    stroke-width="1.5"
+    stroke-linecap="round"
+    fill="none"
+  />
+</svg>
