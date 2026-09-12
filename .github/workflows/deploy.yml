@@ -22,7 +22,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      - name: Install dependencies (retry once on npm crash)
+        run: |
+          npm ci --no-audit || { echo "::warning::npm ci failed, wiping node_modules and retrying"; rm -rf node_modules; npm ci --no-audit; }
       - run: npm run build
       # SPA fallback: serve index.html for any unknown path (client-side routing)
       - run: cp dist/index.html dist/404.html
