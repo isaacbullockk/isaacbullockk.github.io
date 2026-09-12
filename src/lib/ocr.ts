@@ -5,6 +5,15 @@
  * a screenshot, and the worker / WASM core / language data are vendored under
  * `public/tesseract/` so OCR runs fully offline and nothing leaves the device.
  *
+ * Multi-pass preprocessing: a single luminance-grayscale pass silently loses
+ * white text on saturated colored bubbles (iMessage blue/green, Instagram
+ * purple) — tesseract emits zero words for those regions. So each screenshot
+ * is OCR'd under several derived grayscale images (luminance, individual RGB
+ * channels, and their inversions — white text on a blue bubble has extreme
+ * contrast in the red channel, on a purple bubble in the green channel, etc.)
+ * and the word results are UNIONED, deduping overlapping boxes by IoU and
+ * keeping the highest-confidence reading.
+ *
  * Geometry heuristic: OCR words (with bounding boxes) are grouped into lines,
  * noise lines (status bar, name header, timestamps, "typing…") are dropped,
  * and remaining lines are clustered into message bubbles by vertical proximity
@@ -50,6 +59,19 @@ interface LineBox {
   centerX: number;
 }
 
+/** Raw RGBA pixels — the DOM-free interchange format for preprocessing. */
+export interface PixelImage {
+  data: Uint8ClampedArray<ArrayBuffer>;
+  width: number;
+  height: number;
+}
+
+/** One derived grayscale image handed to tesseract in a multi-pass read. */
+export interface OcrPass {
+  name: string;
+  pixels: PixelImage;
+}
+
 /**
  * Absolute URL of the vendored tesseract assets. Resolved against this
  * chunk's own URL (…/assets/ocr-*.js → <base>/tesseract/) so it works from
@@ -78,6 +100,88 @@ const TYPING = /typing|^\s*[.…]{2,}\s*$/i;
 /** Words with at least one letter/digit (keeps "ha!", "2nite"; drops OCR glyph noise). */
 const REAL_WORD = /[a-z0-9]/i;
 
+/** Merge two word boxes with IoU above this into a single reading. */
+const MERGE_IOU = 0.5;
+
+/* --------------------------- multi-pass pixels ---------------------------- */
+
+function toGray(
+  img: PixelImage,
+  pick: (r: number, g: number, b: number) => number,
+  invert: boolean,
+): PixelImage {
+  const { data, width, height } = img;
+  const out = new Uint8ClampedArray(data.length);
+  for (let i = 0; i < data.length; i += 4) {
+    let v = Math.round(pick(data[i], data[i + 1], data[i + 2]));
+    if (invert) v = 255 - v;
+    out[i] = v;
+    out[i + 1] = v;
+    out[i + 2] = v;
+    out[i + 3] = 255;
+  }
+  return { data: out, width, height };
+}
+
+const LUMINANCE = (r: number, g: number, b: number) => r * 0.299 + g * 0.587 + b * 0.114;
+
+/**
+ * Derive the grayscale variants OCR runs over. Colored chat bubbles carry
+ * white text that vanishes under plain luminance (blue bubble ≈ mid-gray,
+ * white ≈ high — tesseract's global binarization emits nothing), while the
+ * same text has near-maximal contrast in at least one raw RGB channel
+ * (blue bubble → red channel ≈ black; green bubble → red/blue channels;
+ * purple bubble → green channel). Each variant is also run inverted, because
+ * tesseract wants dark text on light ground and a mixed-polarity screenshot
+ * can only serve one side per polarity. Word boxes from all passes are
+ * unioned afterwards, so redundant passes cost time, not accuracy.
+ */
+export function buildOcrPasses(img: PixelImage): OcrPass[] {
+  const channels: [string, (r: number, g: number, b: number) => number][] = [
+    ['lum', LUMINANCE],
+    ['r', (r) => r],
+    ['g', (_r, g) => g],
+    ['b', (_r, _g, b) => b],
+  ];
+  const passes: OcrPass[] = [];
+  for (const [name, pick] of channels) {
+    passes.push({ name, pixels: toGray(img, pick, false) });
+    passes.push({ name: `${name}-inv`, pixels: toGray(img, pick, true) });
+  }
+  return passes;
+}
+
+/* ------------------------------ word merging ------------------------------ */
+
+function iou(a: WordBox, b: WordBox): number {
+  const x0 = Math.max(a.x0, b.x0);
+  const y0 = Math.max(a.y0, b.y0);
+  const x1 = Math.min(a.x1, b.x1);
+  const y1 = Math.min(a.y1, b.y1);
+  if (x1 <= x0 || y1 <= y0) return 0;
+  const inter = (x1 - x0) * (y1 - y0);
+  const area = (w: WordBox) => (w.x1 - w.x0) * (w.y1 - w.y0);
+  return inter / (area(a) + area(b) - inter);
+}
+
+/**
+ * Union word boxes from multiple OCR passes: boxes that overlap heavily
+ * (IoU > 0.5) are the same physical word — keep the highest-confidence
+ * reading. Greedy best-first so a strong reading claims its territory before
+ * weaker duplicates from other passes.
+ */
+export function mergeWordBoxes(perPass: WordBox[][]): WordBox[] {
+  const all = perPass.flat().sort((a, b) => b.confidence - a.confidence);
+  const kept: WordBox[] = [];
+  for (const w of all) {
+    if (kept.some((k) => iou(k, w) > MERGE_IOU)) continue;
+    kept.push(w);
+  }
+  return kept;
+}
+
+/* --------------------------- tesseract plumbing --------------------------- */
+
 async function loadWorker(onRecognizeProgress: (fraction: number) => void) {
   const Tesseract = await import('tesseract.js');
   const worker = await Tesseract.createWorker('eng', Tesseract.OEM.LSTM_ONLY, {
@@ -94,8 +198,8 @@ async function loadWorker(onRecognizeProgress: (fraction: number) => void) {
   return worker;
 }
 
-/** Flatten tesseract's block hierarchy into word boxes, then into line boxes. */
-function collectLines(data: unknown): LineBox[] {
+/** Flatten tesseract's block hierarchy into filtered word boxes. */
+export function collectWords(data: unknown): WordBox[] {
   const words: WordBox[] = [];
   const walk = (node: unknown) => {
     if (!node || typeof node !== 'object') return;
@@ -121,14 +225,16 @@ function collectLines(data: unknown): LineBox[] {
     }
   };
   walk(data);
+  return words.filter((w) => w.confidence >= 25 && REAL_WORD.test(w.text));
+}
 
-  const usable = words.filter((w) => w.confidence >= 25 && REAL_WORD.test(w.text));
-  if (usable.length === 0) return [];
+/** Group word boxes into visual line boxes (sort by vertical center, cluster). */
+function groupLines(words: WordBox[]): LineBox[] {
+  if (words.length === 0) return [];
 
-  // Group words into visual lines: sort by vertical center, then cluster.
-  const heights = usable.map((w) => w.y1 - w.y0).sort((a, b) => a - b);
+  const heights = words.map((w) => w.y1 - w.y0).sort((a, b) => a - b);
   const medH = heights[Math.floor(heights.length / 2)] || 12;
-  const sorted = [...usable].sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2);
+  const sorted = [...words].sort((a, b) => (a.y0 + a.y1) / 2 - (b.y0 + b.y1) / 2);
 
   const lines: WordBox[][] = [];
   for (const w of sorted) {
@@ -229,17 +335,16 @@ function clusterBubbles(lines: LineBox[], imgW: number): { sender: Side; text: s
 }
 
 /**
- * Pure pipeline: one tesseract page result + image dimensions → detected
- * bubbles (exported for testing; `extractMessagesFromImages` is the UI path).
+ * Merged multi-pass word set + image dimensions → detected bubbles.
  */
-export function messagesFromPage(
-  data: unknown,
+export function messagesFromWords(
+  words: WordBox[],
   imgW: number,
   imgH: number,
   imageIndex: number,
   idPrefix = `img${imageIndex}`,
 ): DetectedMessage[] {
-  const lines = collectLines(data).filter((l, idx) => !isNoiseLine(l, imgW, imgH, idx));
+  const lines = groupLines(words).filter((l, idx) => !isNoiseLine(l, imgW, imgH, idx));
   return clusterBubbles(lines, imgW)
     .map((b, j) => ({
       id: `${idPrefix}-b${j}`,
@@ -250,65 +355,56 @@ export function messagesFromPage(
 }
 
 /**
- * Read chat screenshots (in user-chosen order) and extract ordered messages.
- * Throws if no readable text is found in any image.
+ * Pure single-page pipeline kept for compatibility: one tesseract page
+ * result + image dimensions → detected bubbles.
  */
-export async function extractMessagesFromImages(
-  images: Blob[],
-  onProgress?: (p: OcrProgress) => void,
-): Promise<DetectedMessage[]> {
-  const total = images.length;
-  let fraction = 0;
-  let currentImage = 1;
-  const report = (image: number) =>
-    onProgress?.({ image, total, percent: Math.round(((image - 1 + fraction) / total) * 100) });
-
-  const worker = await loadWorker((f) => {
-    fraction = f;
-    report(currentImage);
-  });
-
-  const out: DetectedMessage[] = [];
-  try {
-    for (let i = 0; i < total; i++) {
-      currentImage = i + 1;
-      fraction = 0;
-      report(currentImage);
-      // Chat screenshots mix light text on colored bubbles with dark text on
-      // light bubbles; tesseract's global binarization loses one polarity on
-      // color input. A luminance grayscale pass recovers both sides.
-      const prepared = await toGrayscaleCanvas(images[i]);
-
-      // blocks output is off by default in tesseract.js v7 — request the
-      // word-level hierarchy explicitly (needed for bounding boxes).
-      const { data } = await worker.recognize(prepared.canvas, {}, { blocks: true });
-      const dims = { width: prepared.width, height: prepared.height };
-      messagesFromPage(data, dims.width, dims.height, i, `img${i}-x${out.length}`).forEach((m) =>
-        out.push(m),
-      );
-    }
-  } finally {
-    await worker.terminate();
-  }
-
-  if (out.length === 0) {
-    throw new Error('No readable chat text found — try a sharper screenshot.');
-  }
-  return out;
+export function messagesFromPage(
+  data: unknown,
+  imgW: number,
+  imgH: number,
+  imageIndex: number,
+  idPrefix = `img${imageIndex}`,
+): DetectedMessage[] {
+  return messagesFromWords(collectWords(data), imgW, imgH, imageIndex, idPrefix);
 }
 
+/**
+ * The DOM-free core of the multi-pass read: derive the preprocessing passes,
+ * OCR each through the injected `recognize` callback, union the word boxes,
+ * and run the lines → bubbles → sender pipeline on the merged set. The
+ * browser path feeds canvases to a tesseract worker; the Node test harness
+ * feeds PNG buffers — both exercise exactly this code.
+ */
+export async function detectMessagesInPixels(
+  img: PixelImage,
+  imageIndex: number,
+  idPrefix: string,
+  recognize: (pass: OcrPass) => Promise<unknown>,
+  onPass?: (passIndex: number, totalPasses: number) => void,
+): Promise<DetectedMessage[]> {
+  const passes = buildOcrPasses(img);
+  const perPass: WordBox[][] = [];
+  for (let i = 0; i < passes.length; i++) {
+    onPass?.(i, passes.length);
+    const data = await recognize(passes[i]);
+    perPass.push(collectWords(data));
+  }
+  return messagesFromWords(mergeWordBoxes(perPass), img.width, img.height, imageIndex, idPrefix);
+}
+
+/* ------------------------------ browser path ------------------------------ */
+
 interface PreparedImage {
-  canvas: HTMLCanvasElement;
+  pixels: PixelImage;
   width: number;
   height: number;
 }
 
 /**
- * Decode the image and flatten it to luminance grayscale on a canvas.
- * Oversized screenshots are capped at 1600px wide — plenty for OCR and much
- * faster on phone hardware.
+ * Decode the image to raw RGBA pixels on a canvas. Oversized screenshots are
+ * capped at 1600px wide — plenty for OCR and much faster on phone hardware.
  */
-function toGrayscaleCanvas(blob: Blob): Promise<PreparedImage> {
+function decodeToPixels(blob: Blob): Promise<PreparedImage> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const img = new Image();
@@ -327,16 +423,7 @@ function toGrayscaleCanvas(blob: Blob): Promise<PreparedImage> {
       }
       ctx.drawImage(img, 0, 0, w, h);
       const frame = ctx.getImageData(0, 0, w, h);
-      const px = frame.data;
-      for (let i = 0; i < px.length; i += 4) {
-        const lum = Math.round(px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114);
-        px[i] = lum;
-        px[i + 1] = lum;
-        px[i + 2] = lum;
-        px[i + 3] = 255;
-      }
-      ctx.putImageData(frame, 0, 0);
-      resolve({ canvas, width: w, height: h });
+      resolve({ pixels: { data: frame.data, width: w, height: h }, width: w, height: h });
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -344,4 +431,83 @@ function toGrayscaleCanvas(blob: Blob): Promise<PreparedImage> {
     };
     img.src = url;
   });
+}
+
+/** Paint a grayscale PixelImage onto a fresh canvas for worker.recognize. */
+function pixelsToCanvas(p: PixelImage): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = p.width;
+  canvas.height = p.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.putImageData(new ImageData(p.data, p.width, p.height), 0, 0);
+  return canvas;
+}
+
+/**
+ * Read chat screenshots (in user-chosen order) and extract ordered messages.
+ * Each image is OCR'd under multiple preprocessing passes and the results
+ * are merged before bubble detection. Throws if no readable text is found
+ * in any image.
+ */
+export async function extractMessagesFromImages(
+  images: Blob[],
+  onProgress?: (p: OcrProgress) => void,
+): Promise<DetectedMessage[]> {
+  const total = images.length;
+  let passIndex = 0;
+  let totalPasses = 1;
+  let fraction = 0; // recognize progress within the current pass
+  let currentImage = 1;
+  const report = (image: number) =>
+    onProgress?.({
+      image,
+      total,
+      // fold the multi-pass read into each image's slice of the bar
+      percent: Math.round(
+        ((image - 1 + Math.min(1, (passIndex + fraction) / totalPasses)) / total) * 100,
+      ),
+    });
+
+  const worker = await loadWorker((f) => {
+    fraction = f;
+    report(currentImage);
+  });
+
+  const out: DetectedMessage[] = [];
+  try {
+    for (let i = 0; i < total; i++) {
+      currentImage = i + 1;
+      fraction = 0;
+      passIndex = 0;
+      report(currentImage);
+      const prepared = await decodeToPixels(images[i]);
+
+      // blocks output is off by default in tesseract.js v7 — request the
+      // word-level hierarchy explicitly (needed for bounding boxes).
+      const found = await detectMessagesInPixels(
+        prepared.pixels,
+        i,
+        `img${i}-x${out.length}`,
+        async (pass) => {
+          fraction = 0;
+          const { data } = await worker.recognize(pixelsToCanvas(pass.pixels), {}, { blocks: true });
+          return data;
+        },
+        (idx, count) => {
+          passIndex = idx;
+          totalPasses = count;
+          report(currentImage);
+        },
+      );
+      found.forEach((m) => out.push(m));
+    }
+  } finally {
+    await worker.terminate();
+  }
+
+  if (out.length === 0) {
+    throw new Error('No readable chat text found — try a sharper screenshot.');
+  }
+  return out;
 }

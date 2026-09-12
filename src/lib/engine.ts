@@ -206,7 +206,7 @@ export function parseThread(raw: string, herName?: string): ChatMessage[] {
 
 /* --------------------------- signal heuristics ---------------------------- */
 
-const LAUGHTER = /\b(haha+|lol|lmao|hehe+)\b|[😂🤣]/i;
+const LAUGHTER = /\b(haha+|lol|lmao|hehe+)\b|[😂🤣]/iu;
 const QUESTION = /\?/;
 const EXCITEMENT = /!{1,}/;
 const SHORT_ANSWER = /^(ok|okay|k|cool|nice|lol|yeah|yep|yes|no|sure|hmm?|true|right|bet|word|idk|maybe|np|thx|thanks|lol\.?)[.!]?$/i;
@@ -373,10 +373,32 @@ export function classifyStage(messages: ChatMessage[]): ConversationStage {
 
 /* ------------------------------ interest score ---------------------------- */
 
+/**
+ * Below this many total messages the signal heuristics fire on a handful of
+ * texts and the raw score overreads — a 4-message rapport thread has no
+ * business scoring "hot". The score is lerped toward 50 (confidence scales
+ * with sample size), capped out of the hot zone, and flagged with a
+ * LOW SAMPLE signal so the read is honestly labeled as early.
+ */
+export const LOW_SAMPLE_THRESHOLD = 8;
+
 export function scoreInterest(messages: ChatMessage[]): { score: number; signals: Signal[] } {
   const signals = detectSignals(messages);
   const raw = 50 + signals.reduce((s, sig) => s + sig.weight, 0);
-  const score = Math.max(2, Math.min(98, Math.round(raw)));
+  let score = Math.max(2, Math.min(98, Math.round(raw)));
+  const total = messages.length;
+  if (total > 0 && total < LOW_SAMPLE_THRESHOLD) {
+    const confidence = total / LOW_SAMPLE_THRESHOLD;
+    score = Math.round(50 + (score - 50) * confidence);
+    // low-confidence cap: a tiny sample can read cold or warming, never hot
+    score = Math.max(2, Math.min(65, score));
+    signals.push({
+      label: 'LOW SAMPLE — EARLY READ',
+      polarity: 'neutral',
+      weight: 0,
+      principle: 'CONFIDENCE DAMPENER',
+    });
+  }
   return { score, signals };
 }
 
@@ -517,7 +539,14 @@ export interface SuggestInput {
 interface SugCtx {
   name: string; // her name, or "" — templates must read well either way
   named: string; // ", {name}" or ""
-  callback: string; // topic hook, or "that"
+  callback: string; // topic hook, or "that" — only safe after a preposition ("on that", "about that")
+  debate: string; // "our {topic} debate" / "this debate of ours"
+  argument: string; // "our {topic} argument" / "this argument of ours"
+  position: string; // "your {topic} position" / "your position"
+  detail: string; // "The {topic} detail" / "That one detail"
+  hotTakes: string; // "the {topic} hot takes" / "your hottest takes"
+  energy: string; // "your {topic} energy" / "that energy of yours"
+  place: string; // "a {topic} place" / "a place that screamed this conversation"
   activity: string;
   trigger: string; // one-line description of the signal that fired
 }
@@ -537,6 +566,13 @@ function buildSugCtx(input: SuggestInput): SugCtx {
     name,
     named: name ? `, ${name}` : '',
     callback: cb ?? 'that',
+    debate: cb ? `our ${cb} debate` : 'this debate of ours',
+    argument: cb ? `our ${cb} argument` : 'this argument of ours',
+    position: cb ? `your ${cb} position` : 'your position',
+    detail: cb ? `The ${cb} detail` : 'That one detail',
+    hotTakes: cb ? `the ${cb} hot takes` : 'your hottest takes',
+    energy: cb ? `your ${cb} energy` : 'that energy of yours',
+    place: cb ? `a ${cb} place` : 'a place that screamed this conversation',
     activity: activityFor(cb),
     trigger,
   };
@@ -576,7 +612,7 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
     charming: [
       {
         text: (c) =>
-          `The ${c.callback} detail stopped me mid-scroll — there’s clearly a story there. What’s the short version?`,
+          `${c.detail} stopped me mid-scroll — there’s clearly a story there. What’s the short version?`,
         principle: TONE_PRINCIPLES.charming,
         why: (c) =>
           `Specificity proves attention, and attention is what responsiveness research keeps rewarding. ${c.trigger}`,
@@ -617,7 +653,7 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
       },
       {
         text: (c) =>
-          `We can’t keep agreeing like this, people will talk. Quick: defend your ${c.callback} position in exactly one sentence.`,
+          `We can’t keep agreeing like this, people will talk. Quick: defend ${c.position} in exactly one sentence.`,
         principle: TONE_PRINCIPLES.playful,
         why: (c) =>
           `A mock challenge keeps the banter alive and gives her the floor. ${c.trigger}`,
@@ -660,14 +696,14 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
     playful: [
       {
         text: (c) =>
-          `I’m not saying our ${c.callback} debate is the highlight of my week, but I’ve told two people about it. You’re still wrong, by the way.`,
+          `I’m not saying ${c.debate} is the highlight of my week, but I’ve told two people about it. You’re still wrong, by the way.`,
         principle: TONE_PRINCIPLES.playful,
         why: (c) =>
           `A callback proves you were listening — known-liking effects are among the strongest in attraction research. ${c.trigger}`,
       },
       {
         text: (c) =>
-          `Update: I’ve decided you’re trouble — the charming kind. Anyway, I found the place that settles our ${c.callback} argument.`,
+          `Update: I’ve decided you’re trouble — the charming kind. Anyway, I found the place that settles ${c.argument}.`,
         principle: TONE_PRINCIPLES.playful,
         why: (c) =>
           `Playful framing plus a seeded plan — the natural bridge from banter to the ask. ${c.trigger}`,
@@ -710,14 +746,14 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
     playful: [
       {
         text: (c) =>
-          `This banter has officially outgrown the app. ${capitalize(c.activity)}, this week — I’ll bring my A-game, you bring the ${c.callback} hot takes.`,
+          `This banter has officially outgrown the app. ${capitalize(c.activity)}, this week — I’ll bring my A-game, you bring ${c.hotTakes}.`,
         principle: TONE_PRINCIPLES.playful,
         why: (c) =>
           `The window is open; a playful frame keeps the ask light while still being concrete. ${c.trigger}`,
       },
       {
         text: (c) =>
-          `Okay, enough flirting by text — I refuse to lose this ${c.callback} argument without witnesses. When are you free this week?`,
+          `Okay, enough flirting by text — I refuse to lose ${c.argument} without witnesses. When are you free this week?`,
         principle: TONE_PRINCIPLES.playful,
         why: (c) =>
           `Momentum is highest right now; humor lowers the stakes of saying yes. ${c.trigger}`,
@@ -733,7 +769,7 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
       },
       {
         text: (c) =>
-          `I know a place that matches your ${c.callback} energy. Let me take you — what does your week look like?`,
+          `I know a place that matches ${c.energy}. Let me take you — what does your week look like?`,
         principle: TONE_PRINCIPLES.charming,
         why: (c) =>
           `Specificity about the plan shows the attention that responsiveness research rewards. ${c.trigger}`,
@@ -761,7 +797,7 @@ const BANK: Record<StageGroup, Record<Tone, Template[]>> = {
 const REVIVAL_TEMPLATES: Template[] = [
   {
     text: (c) =>
-      `Walked past a ${c.callback} place today and heard your argument in my head. You were still wrong. Hope your week’s treating you well.`,
+      `Walked past ${c.place} today and heard your argument in my head. You were still wrong. Hope your week’s treating you well.`,
     principle: 'THE CALLBACK — PATTERN INTERRUPT',
     why: (c) =>
       `One light, zero-demand message that proves attention without asking for anything. If it lands flat, that’s your answer. ${c.trigger}`,
