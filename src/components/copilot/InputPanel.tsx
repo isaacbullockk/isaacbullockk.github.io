@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Bookmark, ChevronDown, Trash2 } from 'lucide-react';
-import type { ChatContext, SavedConvo } from '@/lib/engine';
+import type { ChatContext, ChatMessage, SavedConvo } from '@/lib/engine';
 import { CONTEXT_CHIPS, STAGE_LABELS } from '@/lib/engine';
 import { EASE_EXPO } from '@/lib/splitText';
 import { cn } from '@/lib/utils';
+import ScreenshotIntake from '@/components/copilot/ScreenshotIntake';
+
+type IntakeTab = 'paste' | 'screenshots';
 
 interface InputPanelProps {
   context: ChatContext;
@@ -16,6 +19,7 @@ interface InputPanelProps {
   analyzing: boolean;
   canSave: boolean;
   onAnalyze: () => void;
+  onAnalyzeMessages: (messages: ChatMessage[]) => void;
   onLoadSample: () => void;
   onSave: () => void;
   saved: SavedConvo[];
@@ -62,6 +66,7 @@ export default function InputPanel(props: InputPanelProps) {
     analyzing,
     canSave,
     onAnalyze,
+    onAnalyzeMessages,
     onLoadSample,
     onSave,
     saved,
@@ -69,6 +74,7 @@ export default function InputPanel(props: InputPanelProps) {
     onDeleteConvo,
   } = props;
   const [savedOpen, setSavedOpen] = useState(false);
+  const [tab, setTab] = useState<IntakeTab>('paste');
 
   return (
     <motion.div
@@ -115,45 +121,104 @@ export default function InputPanel(props: InputPanelProps) {
           className="mt-2 w-full rounded-md border border-hairline bg-surface-2 px-4 py-3 text-[14px] text-cream placeholder:text-cream-faint focus:border-amber/60 focus:outline-none focus:ring-[3px] focus:ring-glow"
         />
 
-        {/* Textarea */}
-        <label className="mono-label mt-6 block text-[10.5px] text-cream-faint" htmlFor="wm-thread">
-          PASTE THE CONVERSATION
-        </label>
-        <textarea
-          id="wm-thread"
-          value={raw}
-          onChange={(e) => onRaw(e.target.value)}
-          placeholder="Paste the thread here — her messages and yours, in order…"
-          spellCheck={false}
-          className="mt-2 min-h-[260px] w-full resize-y rounded-md border border-hairline bg-surface-2 px-4 py-3 font-mono text-[13px] leading-relaxed text-cream placeholder:font-sans placeholder:text-cream-faint focus:border-amber/60 focus:outline-none focus:ring-[3px] focus:ring-glow"
-        />
-        <p className="mono-label mt-2 text-[9.5px] leading-relaxed text-cream-faint">
-          TIP: PREFIX LINES WITH “HER:” AND “ME:” — OR JUST PASTE, WE’LL FIGURE IT OUT.
-        </p>
+        {/* Intake tabs — PASTE / SCREENSHOTS (design §6 tone-tab pattern) */}
+        <p className="mono-label mt-6 block text-[10.5px] text-cream-faint">THE CONVERSATION</p>
+        <div className="relative mt-3 flex rounded-full bg-surface-2 p-1">
+          {(
+            [
+              { id: 'paste', label: 'PASTE' },
+              { id: 'screenshots', label: 'SCREENSHOTS' },
+            ] as { id: IntakeTab; label: string }[]
+          ).map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  'mono-label relative flex-1 rounded-full px-4 py-2 text-[11px] transition-colors duration-300',
+                  active ? 'text-amber' : 'text-cream-dim hover:text-cream',
+                )}
+                aria-pressed={active}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="intake-tab-pill"
+                    className="absolute inset-0 rounded-full border border-amber bg-amber/[0.14]"
+                    transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+                  />
+                )}
+                <span className="relative">{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <AnimatePresence mode="wait" initial={false}>
+          {tab === 'paste' ? (
+            <motion.div
+              key="intake-paste"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              <label className="sr-only" htmlFor="wm-thread">
+                Paste the conversation
+              </label>
+              <textarea
+                id="wm-thread"
+                value={raw}
+                onChange={(e) => onRaw(e.target.value)}
+                placeholder="Paste the thread here — her messages and yours, in order…"
+                spellCheck={false}
+                className="mt-4 min-h-[260px] w-full resize-y rounded-md border border-hairline bg-surface-2 px-4 py-3 font-mono text-[13px] leading-relaxed text-cream placeholder:font-sans placeholder:text-cream-faint focus:border-amber/60 focus:outline-none focus:ring-[3px] focus:ring-glow"
+              />
+              <p className="mono-label mt-2 text-[9.5px] leading-relaxed text-cream-faint">
+                TIP: PREFIX LINES WITH “HER:” AND “ME:” — OR JUST PASTE, WE’LL FIGURE IT OUT.
+              </p>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="intake-screenshots"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+            >
+              <ScreenshotIntake onAnalyze={onAnalyzeMessages} />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Buttons */}
         <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
-          <button
-            type="button"
-            onClick={onAnalyze}
-            disabled={analyzing || !raw.trim()}
-            className="btn-sheen mono-label flex-1 rounded-md bg-amber px-7 py-4 text-[13px] font-semibold text-ink transition-all duration-300 hover:bg-amber-bright active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:min-w-[190px]"
-          >
-            {analyzing ? (
-              <span className="inline-flex items-center gap-2">
-                READING <Dots />
-              </span>
-            ) : (
-              'ANALYZE →'
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={onLoadSample}
-            className="mono-label rounded-md border border-hairline px-6 py-4 text-[12px] text-cream transition-all duration-300 hover:border-amber hover:bg-surface-2 active:scale-[0.97]"
-          >
-            LOAD SAMPLE
-          </button>
+          {tab === 'paste' && (
+            <>
+              <button
+                type="button"
+                onClick={onAnalyze}
+                disabled={analyzing || !raw.trim()}
+                className="btn-sheen mono-label flex-1 rounded-md bg-amber px-7 py-4 text-[13px] font-semibold text-ink transition-all duration-300 hover:bg-amber-bright active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:flex-none sm:min-w-[190px]"
+              >
+                {analyzing ? (
+                  <span className="inline-flex items-center gap-2">
+                    READING <Dots />
+                  </span>
+                ) : (
+                  'ANALYZE →'
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={onLoadSample}
+                className="mono-label rounded-md border border-hairline px-6 py-4 text-[12px] text-cream transition-all duration-300 hover:border-amber hover:bg-surface-2 active:scale-[0.97]"
+              >
+                LOAD SAMPLE
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={onSave}

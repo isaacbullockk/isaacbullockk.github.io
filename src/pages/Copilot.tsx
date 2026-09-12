@@ -5,6 +5,7 @@ import type {
   AISettings,
   AnalysisResult,
   ChatContext,
+  ChatMessage,
   EngineMode,
   Reply,
   SavedConvo,
@@ -37,6 +38,7 @@ import SignalsPanel from '@/components/copilot/SignalsPanel';
 import CoachingNote from '@/components/copilot/CoachingNote';
 import Suggestions, { favId } from '@/components/copilot/Suggestions';
 import SettingsDrawer from '@/components/copilot/SettingsDrawer';
+import InstallHint from '@/components/copilot/InstallHint';
 
 type PageResult = AnalysisResult & { badge: string };
 
@@ -107,6 +109,26 @@ export default function Copilot() {
   const onAnalyze = useCallback(
     () => performAnalysis(raw, context, herName, 0),
     [performAnalysis, raw, context, herName],
+  );
+
+  /**
+   * Screenshot intake: confirmed bubbles → prefixed transcript (round-trips
+   * exactly through parseThread), then the standard analysis pipeline — works
+   * for both rules and AI mode, and keeps save/regenerate intact.
+   */
+  const onAnalyzeMessages = useCallback(
+    (messages: ChatMessage[]) => {
+      const transcript = messages
+        .map(
+          (m) =>
+            `${m.sender === 'her' ? 'HER' : 'ME'}: ${m.text.replace(/\s*\n\s*/g, ' ').trim()}`,
+        )
+        .join('\n');
+      if (!transcript.trim()) return;
+      setRaw(transcript);
+      void performAnalysis(transcript, context, herName, 0);
+    },
+    [performAnalysis, context, herName],
   );
 
   const onLoadSample = useCallback(() => {
@@ -234,6 +256,9 @@ export default function Copilot() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* PWA install affordance */}
+            <InstallHint />
+
             {/* mode toggle */}
             <div className="relative flex rounded-full bg-surface-2 p-1">
               {(['rules', 'ai'] as EngineMode[]).map((m) => {
@@ -299,6 +324,7 @@ export default function Copilot() {
                 analyzing={analyzing}
                 canSave={!!result && !analyzing}
                 onAnalyze={onAnalyze}
+                onAnalyzeMessages={onAnalyzeMessages}
                 onLoadSample={onLoadSample}
                 onSave={onSave}
                 saved={saved}
