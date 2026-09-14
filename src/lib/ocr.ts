@@ -102,6 +102,12 @@ const REAL_WORD = /[a-z0-9]/i;
 
 /** Merge two word boxes with IoU above this into a single reading. */
 const MERGE_IOU = 0.5;
+/**
+ * Confidence gap (points) under which two overlapping readings are a tie —
+ * the longer text wins, preserving trailing punctuation ("really!" vs
+ * "really") that a pass sometimes clips.
+ */
+const CONF_TIE = 12;
 
 /* --------------------------- multi-pass pixels ---------------------------- */
 
@@ -167,15 +173,24 @@ function iou(a: WordBox, b: WordBox): number {
 /**
  * Union word boxes from multiple OCR passes: boxes that overlap heavily
  * (IoU > 0.5) are the same physical word — keep the highest-confidence
- * reading. Greedy best-first so a strong reading claims its territory before
- * weaker duplicates from other passes.
+ * reading, EXCEPT on a near-tie (≤ 12 confidence points), where the longer
+ * text wins so punctuation-rich readings ("wait, what?!") aren't discarded
+ * for a clipped twin. Greedy best-first so a strong reading claims its
+ * territory before weaker duplicates from other passes.
  */
 export function mergeWordBoxes(perPass: WordBox[][]): WordBox[] {
   const all = perPass.flat().sort((a, b) => b.confidence - a.confidence);
   const kept: WordBox[] = [];
   for (const w of all) {
-    if (kept.some((k) => iou(k, w) > MERGE_IOU)) continue;
-    kept.push(w);
+    const dup = kept.findIndex((k) => iou(k, w) > MERGE_IOU);
+    if (dup === -1) {
+      kept.push(w);
+      continue;
+    }
+    const k = kept[dup];
+    if (k.confidence - w.confidence <= CONF_TIE && w.text.length > k.text.length) {
+      kept[dup] = w;
+    }
   }
   return kept;
 }
@@ -369,6 +384,31 @@ export function messagesFromPage(
 }
 
 /**
+ * Early-exit gate after the first (luminance) pass: if the merged word set
+ * is already strong — enough words, both screen halves populated (so both
+ * sides of the chat are being read), and high mean confidence — the extra
+ * channel/inversion passes are skipped and the full 8-pass read remains the
+ * fallback for anything weaker. Thresholds from the audit:
+ * ≥ 12 words, ≥ 3 words centered in each half, mean confidence ≥ 60.
+ *
+ * A wide left bubble can push word centers across the midline, so "centerX
+ * in the right half" alone can't prove the right-anchored side was actually
+ * read (e.g. white text on a saturated bubble that vanishes under luminance
+ * while her gray bubbles read fine). Right-side words must therefore also
+ * reach the right margin (x1 ≥ 78% width) — right-anchored bubbles always
+ * end there, while left bubbles stop at ~75% width even at their widest.
+ */
+function firstPassIsStrong(words: WordBox[], imgW: number): boolean {
+  if (words.length < 12) return false;
+  const mid = imgW / 2;
+  const left = words.filter((w) => (w.x0 + w.x1) / 2 < mid).length;
+  const right = words.filter((w) => (w.x0 + w.x1) / 2 >= mid && w.x1 >= imgW * 0.78).length;
+  if (left < 3 || right < 3) return false;
+  const meanConf = words.reduce((s, w) => s + w.confidence, 0) / words.length;
+  return meanConf >= 60;
+}
+
+/**
  * The DOM-free core of the multi-pass read: derive the preprocessing passes,
  * OCR each through the injected `recognize` callback, union the word boxes,
  * and run the lines → bubbles → sender pipeline on the merged set. The
@@ -388,6 +428,7 @@ export async function detectMessagesInPixels(
     onPass?.(i, passes.length);
     const data = await recognize(passes[i]);
     perPass.push(collectWords(data));
+    if (i === 0 && firstPassIsStrong(mergeWordBoxes(perPass), img.width)) break;
   }
   return messagesFromWords(mergeWordBoxes(perPass), img.width, img.height, imageIndex, idPrefix);
 }

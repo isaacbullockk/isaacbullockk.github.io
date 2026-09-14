@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, Download, Trash2, X } from 'lucide-react';
 import type { AISettings, EngineMode, SavedConvo } from '@/lib/engine';
-import { loadFavs } from '@/lib/engine';
+import { checkEndpoint, loadFavs } from '@/lib/engine';
 import { EASE_EXPO } from '@/lib/splitText';
 import { cn } from '@/lib/utils';
 
@@ -41,14 +41,18 @@ export default function SettingsDrawer({
   const [savedFlash, setSavedFlash] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
 
-  useEffect(() => {
+  // Reset the form whenever the drawer opens — the "adjust state during
+  // render" pattern (no setState-in-effect cascade).
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) {
       setApiKey(settings.apiKey);
       setEndpoint(settings.endpoint);
       setModel(settings.model);
       setConfirmClear(false);
     }
-  }, [open, settings]);
+  }
 
   const save = () => {
     onSaveSettings({ apiKey: apiKey.trim(), endpoint: endpoint.trim(), model: model.trim() });
@@ -76,6 +80,10 @@ export default function SettingsDrawer({
   const field =
     'mt-2 w-full rounded-md border border-hairline bg-surface-2 px-4 py-3 font-mono text-[13px] text-cream placeholder:text-cream-faint focus:border-amber/60 focus:outline-none focus:ring-[3px] focus:ring-glow';
   const label = 'mono-label block text-[10.5px] text-cream-faint';
+
+  // Endpoint trust check — the API key is sent to whatever host is typed
+  // here, so non-https and non-allowlisted hosts get an explicit warning.
+  const endpointVerdict = checkEndpoint(endpoint);
 
   return (
     <AnimatePresence>
@@ -186,6 +194,18 @@ export default function SettingsDrawer({
                     autoComplete="off"
                     className={field}
                   />
+                  {endpointVerdict === 'unknown-host' && (
+                    <p className="mono-label mt-2 rounded-md border border-amber/50 bg-amber/10 px-3 py-2 text-[9.5px] leading-relaxed text-amber">
+                      UNRECOGNIZED HOST — your key is sent to whatever you put here. Confirm you trust it.
+                    </p>
+                  )}
+                  {(endpointVerdict === 'insecure' || endpointVerdict === 'invalid') && (
+                    <p className="mono-label mt-2 rounded-md border border-wine/60 bg-wine/15 px-3 py-2 text-[9.5px] leading-relaxed text-wine">
+                      {endpointVerdict === 'insecure'
+                        ? 'NOT HTTPS — AI mode will refuse to send your key here. Use https:// (http is allowed for localhost only).'
+                        : 'NOT A VALID URL — AI mode will fail until this parses as a URL.'}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className={label} htmlFor="wm-model">MODEL</label>

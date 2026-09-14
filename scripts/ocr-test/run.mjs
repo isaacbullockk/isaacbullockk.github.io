@@ -87,6 +87,9 @@ const sim = (a, b) => {
 
 /* -------------------------------- main -------------------------------- */
 const baseline = process.argv.includes('--baseline');
+// --full8 forces all 8 preprocessing passes (skips the early-exit gate), so
+// its timing is the before/after comparison point for the early-exit fix.
+const full8 = process.argv.includes('--full8');
 const styles = process.argv.includes('--style')
   ? [process.argv[process.argv.indexOf('--style') + 1]]
   : ['imessage-light', 'imessage-sms-green', 'whatsapp-dark', 'instagram-dark'];
@@ -110,16 +113,32 @@ for (const style of styles) {
 
   const t0 = Date.now();
   let found;
+  let passesRun = 1;
   if (baseline) {
     // The old single-pass behavior: luminance grayscale only.
     const pass = ocr.buildOcrPasses(pixels).find((p) => p.name === 'lum');
     const { data } = await worker.recognize(encodePng(pass.pixels), {}, { blocks: true });
     found = ocr.messagesFromPage(data, meta.width, meta.height, 0, 't');
+  } else if (full8) {
+    // Early-exit bypassed: run every derived pass explicitly.
+    const passes = ocr.buildOcrPasses(pixels);
+    const perPass = [];
+    for (const pass of passes) {
+      const { data } = await worker.recognize(encodePng(pass.pixels), {}, { blocks: true });
+      perPass.push(ocr.collectWords(data));
+    }
+    passesRun = passes.length;
+    found = ocr.messagesFromWords(
+      ocr.mergeWordBoxes(perPass), meta.width, meta.height, 0, 't');
   } else {
+    let lastPass = 0;
     found = await ocr.detectMessagesInPixels(pixels, 0, 't', async (pass) => {
       const { data } = await worker.recognize(encodePng(pass.pixels), {}, { blocks: true });
       return data;
+    }, (idx) => {
+      lastPass = idx;
     });
+    passesRun = lastPass + 1;
   }
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -142,7 +161,12 @@ for (const style of styles) {
   const ok = bothSides && senderOK && avgSim >= 0.7;
   allPass = allPass && ok;
 
-  console.log(`\n=== ${style} ${baseline ? '[BASELINE single lum pass]' : '[MULTI-PASS]'} (${secs}s) ===`);
+  const modeTag = baseline
+    ? '[BASELINE single lum pass]'
+    : full8
+      ? '[FULL 8-PASS, early-exit off]'
+      : `[MULTI-PASS, ${passesRun}/8 passes used${passesRun === 1 ? ' — early exit' : ''}]`;
+  console.log(`\n=== ${style} ${modeTag} (${secs}s) ===`);
   console.log(`extracted ${found.length} (her ${herN} / you ${youN}) — expected ${exp.length} (her ${expHer} / you ${expYou})`);
   console.log(`senders ${senderOK ? 'MATCH' : 'MISMATCH'} | both sides ${bothSides ? 'yes' : 'NO'} | avg text similarity ${(avgSim * 100).toFixed(1)}%`);
   for (let i = 0; i < Math.max(found.length, exp.length); i++) {
