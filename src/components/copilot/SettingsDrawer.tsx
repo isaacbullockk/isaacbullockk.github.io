@@ -23,36 +23,25 @@ const MODES: { id: EngineMode; title: string; desc: string }[] = [
   { id: 'ai', title: 'AI', desc: 'Your key, your model, client-side only.' },
 ];
 
-/** Section 6 — right-side settings sheet (copilot.md §6). */
-export default function SettingsDrawer({
-  open,
-  onClose,
-  mode,
-  onModeChange,
+/**
+ * Drawer body. Only mounted while the drawer is open, so its form state
+ * initializes fresh from props on every open — no setState-in-render reset
+ * and no effect cascade; React remounts it on close.
+ */
+function DrawerContent({
   settings,
   onSaveSettings,
   onToast,
   onClearData,
   savedConvos,
-}: SettingsDrawerProps) {
+  mode,
+  onModeChange,
+}: Omit<SettingsDrawerProps, 'open' | 'onClose'>) {
   const [apiKey, setApiKey] = useState(settings.apiKey);
   const [endpoint, setEndpoint] = useState(settings.endpoint);
   const [model, setModel] = useState(settings.model);
   const [savedFlash, setSavedFlash] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
-
-  // Reset the form whenever the drawer opens — the "adjust state during
-  // render" pattern (no setState-in-effect cascade).
-  const [wasOpen, setWasOpen] = useState(open);
-  if (open !== wasOpen) {
-    setWasOpen(open);
-    if (open) {
-      setApiKey(settings.apiKey);
-      setEndpoint(settings.endpoint);
-      setModel(settings.model);
-      setConfirmClear(false);
-    }
-  }
 
   const save = () => {
     onSaveSettings({ apiKey: apiKey.trim(), endpoint: endpoint.trim(), model: model.trim() });
@@ -86,41 +75,10 @@ export default function SettingsDrawer({
   const endpointVerdict = checkEndpoint(endpoint);
 
   return (
-    <AnimatePresence>
-      {open && (
-        <>
-          <motion.div
-            className="fixed inset-0 z-[85] bg-ink/60"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.3 }}
-            onClick={onClose}
-          />
-          <motion.aside
-            className="fixed inset-y-0 right-0 z-[86] flex w-full flex-col border-l border-hairline bg-surface sm:w-[420px]"
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', stiffness: 320, damping: 34 }}
-            role="dialog"
-            aria-label="Settings"
-          >
-            <div className="flex items-center justify-between border-b border-hairline px-6 py-5">
-              <p className="mono-label text-[12px] text-amber">SETTINGS</p>
-              <button
-                type="button"
-                onClick={onClose}
-                className="flex h-9 w-9 items-center justify-center text-cream-dim transition-colors hover:text-cream"
-                aria-label="Close settings"
-              >
-                <X className="h-4.5 w-4.5" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-6 py-6">
-              {/* engine mode */}
-              <motion.div
+    <>
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        {/* engine mode */}
+        <motion.div
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.35, ease: EASE_EXPO }}
@@ -286,11 +244,62 @@ export default function SettingsDrawer({
                   </button>
                 </div>
               </motion.div>
+      </div>
+
+      <p className="mono-label border-t border-hairline px-6 py-4 text-[9px] leading-relaxed text-cream-faint">
+        AI CALLS ARE MADE DIRECTLY FROM YOUR BROWSER. RULES MODE NEVER LEAVES THE DEVICE.
+      </p>
+    </>
+  );
+}
+
+/** Section 6 — right-side settings sheet (copilot.md §6). */
+export default function SettingsDrawer(props: SettingsDrawerProps) {
+  const { open, onClose } = props;
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            className="fixed inset-0 z-[85] bg-ink/60"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            onClick={onClose}
+          />
+          <motion.aside
+            className="fixed inset-y-0 right-0 z-[86] flex w-full flex-col border-l border-hairline bg-surface sm:w-[420px]"
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ type: 'spring', stiffness: 320, damping: 34 }}
+            role="dialog"
+            aria-label="Settings"
+          >
+            <div className="flex items-center justify-between border-b border-hairline px-6 py-5">
+              <p className="mono-label text-[12px] text-amber">SETTINGS</p>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex h-9 w-9 items-center justify-center text-cream-dim transition-colors hover:text-cream"
+                aria-label="Close settings"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
             </div>
 
-            <p className="mono-label border-t border-hairline px-6 py-4 text-[9px] leading-relaxed text-cream-faint">
-              AI CALLS ARE MADE DIRECTLY FROM YOUR BROWSER. RULES MODE NEVER LEAVES THE DEVICE.
-            </p>
+            {/* Remounted on every open → form state resets without a
+                setState-in-render reset or an effect cascade. */}
+            <DrawerContent
+              mode={props.mode}
+              onModeChange={props.onModeChange}
+              settings={props.settings}
+              onSaveSettings={props.onSaveSettings}
+              onToast={props.onToast}
+              onClearData={props.onClearData}
+              savedConvos={props.savedConvos}
+            />
           </motion.aside>
         </>
       )}

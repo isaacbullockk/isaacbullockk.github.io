@@ -37,6 +37,13 @@ export interface DetectedMessage extends ChatMessage {
   id: string;
   /** Index of the screenshot this bubble came from. */
   imageIndex: number;
+  /**
+   * Sender-assignment confidence flag: set when the word layout was NOT a
+   * clear bimodal left/right chat (one side empty, or no words anchored to
+   * the right margin — Android-style single-side layouts, heavy crops). The
+   * review step surfaces an amber "LAYOUT UNCERTAIN — CHECK SENDERS" banner.
+   */
+  layoutUncertain?: boolean;
 }
 
 interface WordBox {
@@ -81,7 +88,6 @@ const TESS_BASE = import.meta.env.DEV
   ? new URL('/tesseract/', window.location.origin).href
   : new URL('../tesseract/', import.meta.url).href;
 
-const CLOCK = /\b\d{1,2}:\d{2}\b/;
 /**
  * Day/time separator pills ("Today 8:15 PM", "Mon, Sep 2, 7:44 PM",
  * "Wed 12:04", "Sep 2"). Anchored at line start and requiring a clock or
@@ -99,6 +105,28 @@ const SEPARATOR = new RegExp(
 const TYPING = /typing|^\s*[.…]{2,}\s*$/i;
 /** Words with at least one letter/digit (keeps "ha!", "2nite"; drops OCR glyph noise). */
 const REAL_WORD = /[a-z0-9]/i;
+
+/**
+ * Status-bar fingerprints: a clock token, a battery percentage, or carrier/
+ * signal glyphs. A top-band line is noise ONLY when it matches one of these —
+ * a plain short sentence at the top of a cropped screenshot is content.
+ */
+const STATUS_BAR =
+  /(\b\d{1,2}:\d{2}\b|\b\d{1,3}\s*%|\b(?:[2-5]g|lte|volte|wi-?fi|no service|airplane mode)\b|[▲▮▯◢◣●◐⚡⌁⏏✈📶🔋󰁹])/iu;
+
+/**
+ * Contact-header names are short, name-like strings: ≤ 4 words and no
+ * sentence-ending punctuation (a real first message like "hey — how was
+ * your weekend?" must never be consumed as a header). Internal dots in
+ * handles ("alex.makes.pasta") are fine; a terminal or sentence . ? ! is not.
+ */
+function isNameLike(text: string): boolean {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 4) return false;
+  if (/[?!]/.test(text)) return false;
+  if (/\.\s/.test(text) || /\.$/.test(text)) return false;
+  return true;
+}
 
 /** Merge two word boxes with IoU above this into a single reading. */
 const MERGE_IOU = 0.5;
@@ -291,10 +319,13 @@ function isNoiseLine(line: LineBox, imgW: number, imgH: number, index: number): 
   const topBand = line.y1 < imgH * 0.05;
   const centered = Math.abs(line.centerX - imgW / 2) < imgW * 0.18;
 
-  // Phone status bar (time / carrier / battery row at the very top).
-  if (topBand && (line.text.length <= 20 || CLOCK.test(line.text))) return true;
-  // Contact name + presence header, centered near the top of the chat.
-  if (index <= 2 && line.y0 < imgH * 0.16 && centered) return true;
+  // Phone status bar (time / carrier / battery row at the very top) — noise
+  // ONLY when it carries a status-bar fingerprint; a short sentence at the
+  // top of a cropped screenshot survives.
+  if (topBand && STATUS_BAR.test(line.text)) return true;
+  // Contact name + presence header, centered near the top of the chat — but
+  // only when it reads as a short name-like string, never a real message.
+  if (index <= 2 && line.y0 < imgH * 0.16 && centered && isNameLike(line.text)) return true;
   // Day/time separator pills: genuinely centered (tight) and date-shaped.
   const tightCenter = Math.abs(line.centerX - imgW / 2) < imgW * 0.1;
   if (tightCenter && line.text.length <= 34 && SEPARATOR.test(line.text)) return true;
@@ -350,7 +381,32 @@ function clusterBubbles(lines: LineBox[], imgW: number): { sender: Side; text: s
 }
 
 /**
+ * Layout-confidence signal for sender assignment. A healthy chat screenshot
+ * is BIMODAL: her bubbles anchored left, yours anchored right with words
+ * reaching the right margin. The read is ambiguous — and the review step
+ * should say so — when:
+ *  - every detected message landed on ONE sender (one side empty), or
+ *  - fewer than 3 words are anchored at the right margin at all (an
+ *    Android-style single-side layout or a heavy crop), so the left/right
+ *    heuristic had nothing solid to anchor on.
+ */
+export function layoutIsAmbiguous(
+  words: WordBox[],
+  imgW: number,
+  messages: DetectedMessage[],
+): boolean {
+  if (messages.length === 0) return false;
+  const her = messages.some((m) => m.sender === 'her');
+  const you = messages.some((m) => m.sender === 'you');
+  if (!her || !you) return true;
+  const rightAnchored = words.filter((w) => w.x1 >= imgW * 0.78).length;
+  return rightAnchored < 3;
+}
+
+/**
  * Merged multi-pass word set + image dimensions → detected bubbles.
+ * Pass the raw word set back through layoutIsAmbiguous to flag uncertain
+ * sender assignments (done by detectMessagesInPixels / the browser path).
  */
 export function messagesFromWords(
   words: WordBox[],
@@ -428,9 +484,36 @@ export async function detectMessagesInPixels(
     onPass?.(i, passes.length);
     const data = await recognize(passes[i]);
     perPass.push(collectWords(data));
-    if (i === 0 && firstPassIsStrong(mergeWordBoxes(perPass), img.width)) break;
+    if (i === 0) {
+      const merged = mergeWordBoxes(perPass);
+      if (firstPassIsStrong(merged, img.width)) {
+        // Sanity recheck before trusting the early exit: if every message
+        // landed on ONE sender, one side of the chat went unread (e.g. a wide
+        // left bubble slipped past the right-margin gate). Discard the
+        // early-exit result and continue with the full 8-pass pipeline.
+        const early = messagesFromWords(merged, img.width, img.height, imageIndex, idPrefix);
+        const bothSides =
+          early.some((m) => m.sender === 'her') && early.some((m) => m.sender === 'you');
+        if (bothSides) return flagLayoutConfidence(early, merged, img.width);
+      }
+    }
   }
-  return messagesFromWords(mergeWordBoxes(perPass), img.width, img.height, imageIndex, idPrefix);
+  const merged = mergeWordBoxes(perPass);
+  return flagLayoutConfidence(
+    messagesFromWords(merged, img.width, img.height, imageIndex, idPrefix),
+    merged,
+    img.width,
+  );
+}
+
+/** Attach the layout-uncertainty flag to every detected message. */
+function flagLayoutConfidence(
+  messages: DetectedMessage[],
+  words: WordBox[],
+  imgW: number,
+): DetectedMessage[] {
+  if (!layoutIsAmbiguous(words, imgW, messages)) return messages;
+  return messages.map((m) => ({ ...m, layoutUncertain: true }));
 }
 
 /* ------------------------------ browser path ------------------------------ */

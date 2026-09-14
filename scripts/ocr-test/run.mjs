@@ -14,6 +14,7 @@
 import { createWorker } from 'tesseract.js';
 import { deflateSync } from 'node:zlib';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -21,7 +22,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const TESS = path.join(ROOT, 'public/tesseract');
 
-const ocr = await import(path.join(HERE, 'out/ocr.bundle.mjs'));
+// Bundle the real OCR module fresh on every run (same esbuild pattern as
+// scripts/engine-check.mjs) so the harness can never drift from src/.
+execFileSync(path.join(ROOT, 'node_modules/.bin/esbuild'), [
+  'src/lib/ocr.ts', '--bundle', '--format=esm', '--platform=node',
+  '--external:tesseract.js', '--define:import.meta.env.DEV=false',
+  `--outfile=${path.join(HERE, 'out/ocr.bundle.mjs')}`,
+], { cwd: ROOT, stdio: 'inherit' });
+
+const ocr = await import(path.join(HERE, `out/ocr.bundle.mjs?v=${Date.now()}`));
 
 /* ---------------- minimal PNG encoder (RGBA, filter 0) ---------------- */
 function crc32(buf) {
@@ -92,7 +101,7 @@ const baseline = process.argv.includes('--baseline');
 const full8 = process.argv.includes('--full8');
 const styles = process.argv.includes('--style')
   ? [process.argv[process.argv.indexOf('--style') + 1]]
-  : ['imessage-light', 'imessage-sms-green', 'whatsapp-dark', 'instagram-dark'];
+  : ['imessage-light', 'imessage-sms-green', 'whatsapp-dark', 'instagram-dark', 'android-wide-left'];
 
 const worker = await createWorker('eng', 1 /* OEM.LSTM_ONLY */, {
   langPath: TESS,
@@ -158,7 +167,16 @@ for (const style of styles) {
   }
   const avgSim = sims.length ? sims.reduce((a, b) => a + b, 0) / sims.length : 0;
   const bothSides = herN > 0 && youN > 0;
-  const ok = bothSides && senderOK && avgSim >= 0.7;
+  let ok = bothSides && senderOK && avgSim >= 0.7;
+
+  // Item 8: the one-side-readable style must trigger the sanity recheck —
+  // the early exit is discarded and the FULL pass pipeline runs instead.
+  let recheckNote = '';
+  if (style === 'android-wide-left' && !baseline && !full8) {
+    const recheckFired = passesRun > 1;
+    ok = ok && recheckFired;
+    recheckNote = ` | sanity recheck ${recheckFired ? 'FIRED (full pipeline ran)' : 'DID NOT FIRE — FAIL'}`;
+  }
   allPass = allPass && ok;
 
   const modeTag = baseline
@@ -168,7 +186,7 @@ for (const style of styles) {
       : `[MULTI-PASS, ${passesRun}/8 passes used${passesRun === 1 ? ' — early exit' : ''}]`;
   console.log(`\n=== ${style} ${modeTag} (${secs}s) ===`);
   console.log(`extracted ${found.length} (her ${herN} / you ${youN}) — expected ${exp.length} (her ${expHer} / you ${expYou})`);
-  console.log(`senders ${senderOK ? 'MATCH' : 'MISMATCH'} | both sides ${bothSides ? 'yes' : 'NO'} | avg text similarity ${(avgSim * 100).toFixed(1)}%`);
+  console.log(`senders ${senderOK ? 'MATCH' : 'MISMATCH'} | both sides ${bothSides ? 'yes' : 'NO'} | avg text similarity ${(avgSim * 100).toFixed(1)}%${recheckNote}`);
   for (let i = 0; i < Math.max(found.length, exp.length); i++) {
     const f = found[i], e = exp[i];
     const s = f && e ? (sim(f.text, e.text) * 100).toFixed(0) + '%' : '  —';
@@ -179,5 +197,24 @@ for (const style of styles) {
 }
 
 await worker.terminate();
+
+/* ---- item 9: layout-confidence signal (pure checks) ---- */
+// Bimodal layout (words on both halves, right-anchored) + both senders → confident.
+const W2 = 1000;
+const mkWords = (xs) => xs.map(([x0, x1]) => ({ text: 'hi', x0, y0: 0, x1, y1: 10, confidence: 90 }));
+const bothMsgs = [
+  { id: 'a', sender: 'her', text: 'hi', imageIndex: 0 },
+  { id: 'b', sender: 'you', text: 'hey', imageIndex: 0 },
+];
+const bimodalWords = mkWords([[40, 120], [140, 220], [60, 160], [820, 790 + 200], [830, 990], [840, 995]]);
+let flagOK = ocr.layoutIsAmbiguous(bimodalWords, W2, bothMsgs) === false;
+// One side empty → ambiguous.
+flagOK = flagOK && ocr.layoutIsAmbiguous(bimodalWords, W2, [bothMsgs[0]]) === true;
+// No words anchored at the right margin (Android-style single side) → ambiguous.
+const leftOnlyWords = mkWords([[40, 120], [140, 300], [60, 400], [80, 500]]);
+flagOK = flagOK && ocr.layoutIsAmbiguous(leftOnlyWords, W2, bothMsgs) === true;
+console.log(`${flagOK ? 'PASS' : 'FAIL'} layout-confidence signal (bimodal→confident, one-side/no-right-margin→uncertain)`);
+allPass = allPass && flagOK;
+
 console.log(`\n${allPass ? 'ALL STYLES PASS' : 'SOME STYLES FAILED'}`);
 process.exit(allPass ? 0 : 1);

@@ -39,7 +39,7 @@ export const MASTERS: Master[] = [
     move: 'The Specific Compliment: praise what no one else noticed.',
     chip: 'SPECIFICITY',
     img: '/portrait-byron.png',
-    chapter: 9,
+    chapter: 3,
   },
   {
     id: 'franklin',
@@ -164,12 +164,12 @@ export const CHAPTERS: Chapter[] = [
       'Byrne’s similarity–attraction paradigm is one of the most replicated findings in social psychology: perceived similarity — in taste, values, quirks — predicts liking. The key word is perceived. Shared ground only works once it’s surfaced, and surfaced specifically.',
     citation: 'BYRNE — THE SIMILARITY–ATTRACTION PARADIGM.',
     master: {
-      id: 'casanova',
-      name: 'Giacomo Casanova',
-      dates: '1725–1798',
-      img: '/portrait-casanova.png',
+      id: 'byron',
+      name: 'Lord Byron',
+      dates: '1788–1824',
+      img: '/portrait-byron.png',
       anecdote:
-        'He was a mirror of worlds — he read her libraries, learned her politics, spoke her music back to her in her own idiom. Not as camouflage: as genuine curiosity about whatever she loved, pursued until it became his too.',
+        'Byron’s letters ran on found kinship — he quoted a correspondent’s favorite lines back to her, adopted her references, and named the shared taste precisely instead of vaguely. Resemblance, surfaced specifically, did the work grand gestures couldn’t.',
     },
     lines: [
       'You’re the only other person I’ve met who rates the rainy-day rewatch over the night out.',
@@ -204,7 +204,7 @@ export const CHAPTERS: Chapter[] = [
     lines: [
       'I’d say I peaked in the group chat, but honestly I peaked assembling IKEA without the manual.',
       'Careful — I have a bit about hotel breakfast buffets and I’m not afraid to use it.',
-      'You laughed at your own joke before you finished typing it, didn’t you. I respect it.',
+      'I laughed at my own joke before I finished typing it, so the bar for tonight is on the floor. Your turn.',
     ],
     do: [
       'Punch at harmless things — yourself included.',

@@ -24,7 +24,15 @@ export default function MessageReview({
   onAnalyze,
 }: MessageReviewProps) {
   const update = (id: string, patch: Partial<DetectedMessage>) =>
-    onChange(messages.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+    onChange(
+      messages.map((m) =>
+        m.id === id
+          ? // Reviewing a row (editing text or toggling the sender) clears its
+            // layout-uncertainty flag — the user has checked this bubble.
+            { ...m, ...patch, layoutUncertain: undefined }
+          : m,
+      ),
+    );
 
   const remove = (id: string) => onChange(messages.filter((m) => m.id !== id));
 
@@ -60,6 +68,17 @@ export default function MessageReview({
       <p className="mono-label mt-2 text-[9.5px] leading-relaxed text-cream-faint">
         OCR MISSES THINGS — FIX TEXT AND SENDERS BEFORE ANALYZING. RIGHT SIDE = YOU, LEFT = HER.
       </p>
+
+      {/* layout-confidence warning: the left/right heuristic wasn't sure */}
+      {messages.some((m) => m.layoutUncertain) && (
+        <p
+          className="mono-label mt-3 rounded-md border border-amber/50 bg-amber/10 px-3 py-2 text-[10px] leading-relaxed text-amber"
+          role="alert"
+        >
+          LAYOUT UNCERTAIN — CHECK SENDERS. THIS LAYOUT DIDN’T SHOW A CLEAR LEFT/RIGHT SPLIT
+          (SINGLE-SIDE APP OR TIGHT CROP), SO CONFIRM EACH BUBBLE’S HER/YOU TOGGLE BELOW.
+        </p>
+      )}
 
       <ul className="mt-4 space-y-2">
         <AnimatePresence initial={false}>

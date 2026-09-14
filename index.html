@@ -3,6 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content Security Policy (meta-delivered; tighten further via HTTP headers
+      at deploy time if the host supports them).
+      - script/style/img/worker restricted to same-origin (+ inline styles for
+        Tailwind/runtime style attrs and Google Fonts).
+      - connect-src allows https: deliberately: AI mode is BYO-endpoint — the
+        user points the app at their own OpenAI-compatible host, and calls go
+        browser → endpoint directly. Rules mode never uses the network.
+      - The service worker registers from a same-origin script, which
+        script-src 'self' / worker-src 'self' permit.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https:; worker-src 'self' blob:; manifest-src 'self'"
+    />
     <link rel="icon" type="image/svg+xml" href="/wingman-mark.svg" />
     <meta name="description" content="Wingman — a consent-forward dating chat co-pilot. Reads the signals, names the stage, and writes your next move in three tones, each backed by published psychology." />
     <!-- PWA -->

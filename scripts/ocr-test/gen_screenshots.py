@@ -143,7 +143,59 @@ def instagram_dark():
     save("instagram-dark", img, CONVO)
 
 
+def android_wide_left():
+    """Early-exit sanity-recheck case (item 8).
+
+    Her bubbles: light gray, dark text, and WIDE (a single long line reaches
+    past 78% of the screen width) — readable under luminance, and wide enough
+    to slip past the first-pass gate's right-margin guard.
+    Your bubbles: white text on saturated yellow — luminance/red/green all
+    show ~zero contrast (white ≈ yellow luminance), so the first pass reads
+    NOTHING on the right side. The gate passes on her wide words alone, every
+    bubble lands on 'her', the sanity recheck discards the early exit, and
+    only the full 8-pass pipeline (blue channel / inversions) recovers your
+    side. The test must therefore report all 8 passes used AND both senders.
+    """
+    img = Image.new("RGB", (W, H), "#FFFFFF")
+    d = ImageDraw.Draw(img)
+    draw_status_bar(d, "#000000")
+    draw_header(d, "Alex", "#000000")
+
+    convo = [
+        ("her", "okay so i finally tried that little dumpling place on fifth and you were completely right about every single thing on that menu"),
+        ("you", "Told you. The soup dumplings alone are worth the train ride."),
+        ("her", "the soup dumplings genuinely changed something in me and i need to know exactly what you plan to order for us next time"),
+        ("you", "Next time you are coming with me and ordering the scallion pancakes."),
+        ("her", "deal, but only if you admit my restaurant instincts are better than yours at least once out loud in front of witnesses"),
+        ("you", "Fine. Your restaurant instincts are better. Once. Enjoy it."),
+    ]
+
+    y = 300
+    for sender, text in convo:
+        if sender == "her":
+            # wide bubble: allow lines up to 88% of screen width, so several
+            # word boxes per bubble end past the 78% right-margin gate
+            lines = wrap(d, text, F_MSG, int(W * 0.88) - 2 * BUBBLE_PAD_X)
+            fill, fg = "#E9E9EB", "#000000"
+        else:
+            lines = wrap(d, text, F_MSG, MAX_BUBBLE_W - 2 * BUBBLE_PAD_X)
+            fill, fg = "#E8E83C", "#FFFFFF"  # white on yellow: invisible in luminance
+        line_hs = [text_size(d, l, F_MSG)[1] for l in lines]
+        text_w = max(d.textlength(l, font=F_MSG) for l in lines)
+        bw = int(text_w + 2 * BUBBLE_PAD_X)
+        bh = int(sum(line_hs) + LINE_GAP * (len(lines) - 1) + 2 * BUBBLE_PAD_Y)
+        x0 = MARGIN if sender == "her" else W - MARGIN - bw
+        d.rounded_rectangle([x0, y, x0 + bw, y + bh], radius=RADIUS, fill=fill)
+        ty = y + BUBBLE_PAD_Y
+        for l, lh in zip(lines, line_hs):
+            d.text((x0 + BUBBLE_PAD_X, ty), l, font=F_MSG, fill=fg)
+            ty += lh + LINE_GAP
+        y += bh + BUBBLE_GAP
+    save("android-wide-left", img, convo)
+
+
 imessage("#007AFF", "imessage-light")
 imessage("#34C759", "imessage-sms-green")
 whatsapp_dark()
 instagram_dark()
+android_wide_left()
