@@ -29,7 +29,7 @@ export const STAGE_DESCRIPTIONS: Record<ConversationStage, string> = {
   rapport: 'Warming up — trading details, testing the rhythm of the exchange.',
   building: 'Investment phase — responsiveness, callbacks, and seeded date ideas.',
   ask: 'The window is open — make the plan concrete: activity, day, time.',
-  stalled: 'Momentum lost — one honest revival attempt, then exit with grace.',
+  stalled: 'Momentum lost — two light swings at most, then exit with grace.',
 };
 
 export type Tone = 'playful' | 'charming' | 'direct';
@@ -483,7 +483,7 @@ export function coachingFor(
 ): Coaching {
   if (stage === 'stalled' || fading || zone === 'cold') {
     return {
-      note: 'She’s cooling. Send one light callback — if it lands flat, exit warm and tall. Persistence reads as pressure; composure is the attractive move.',
+      note: 'She’s cooling. You get two light swings — a callback or a revival — then exit warm and tall if they land flat. Persistence reads as pressure; composure is the attractive move.',
       source: '— GRACEFUL EXITS',
     };
   }
@@ -1101,18 +1101,18 @@ function extractJsonCandidates(text: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let start = -1;
-  let inString = false;
+  let quote: '"' | "'" | '`' | null = null;
   let escaped = false;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (inString) {
+    if (quote) {
       if (escaped) escaped = false;
       else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
+      else if (ch === quote) quote = null;
       continue;
     }
-    if (ch === '"') {
-      inString = true;
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
     } else if (ch === '{') {
       if (depth === 0) start = i;
       depth++;

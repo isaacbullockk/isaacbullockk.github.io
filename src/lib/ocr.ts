@@ -135,7 +135,7 @@ const MERGE_IOU = 0.5;
  * the longer text wins, preserving trailing punctuation ("really!" vs
  * "really") that a pass sometimes clips.
  */
-const CONF_TIE = 12;
+const CONF_TIE = 8;
 
 /* --------------------------- multi-pass pixels ---------------------------- */
 
